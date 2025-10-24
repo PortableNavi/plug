@@ -1,4 +1,4 @@
-use crate::Guard;
+use crate::{Guard, Keep};
 pub struct HeapedRef<'a, T>(&'a T);
 
 
@@ -44,6 +44,28 @@ where
     unsafe fn heaped(self) -> HeapedRef<'a, T>
     {
         HeapedRef(self.reference)
+    }
+}
+
+
+unsafe impl<'d, 'a, T> Heaped<'a, T> for &'a Keep<'d, T>
+where
+    'd: 'a,
+{
+    unsafe fn heaped(self) -> HeapedRef<'a, T>
+    {
+        HeapedRef(self.read().reference)
+    }
+}
+
+
+unsafe impl<'d, 'a, T> Heaped<'a, T> for Keep<'d, T>
+where
+    'd: 'a,
+{
+    unsafe fn heaped(self) -> HeapedRef<'a, T>
+    {
+        HeapedRef(self.read().reference)
     }
 }
 
