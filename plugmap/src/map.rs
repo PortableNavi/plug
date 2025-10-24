@@ -6,7 +6,7 @@ use keep::{Domain, Guard, Heaped, Keep};
 use std::hash::{BuildHasher, Hash, RandomState};
 
 
-pub struct Plugmap<'d, K, V, S = RandomState>
+pub struct PlugMap<'d, K, V, S = RandomState>
 {
     domain: &'d Domain,
     table: Keep<'d, Table<'d, K, V>>,
@@ -14,7 +14,10 @@ pub struct Plugmap<'d, K, V, S = RandomState>
 }
 
 
-impl<'d, K, V> Default for Plugmap<'d, K, V, RandomState>
+impl<'d, K, V> Default for PlugMap<'d, K, V, RandomState>
+where
+    V: 'd,
+    K: Hash + Eq + 'd,
 {
     fn default() -> Self
     {
@@ -23,27 +26,34 @@ impl<'d, K, V> Default for Plugmap<'d, K, V, RandomState>
 }
 
 
-impl<'d, K, V> Plugmap<'d, K, V, RandomState>
+impl<'d, K, V> PlugMap<'d, K, V, RandomState>
+where
+    V: 'd,
+    K: Hash + Eq + 'd,
 {
     pub fn new() -> Self
     {
         let domain = unsafe { &*Box::into_raw(Box::new(Domain::new())) };
-
-        Self {
-            domain,
-            table: domain.keep(Table::new(Table::DEFAULT_SIZE, domain)),
-            hasher: RandomState::new(),
-        }
+        Self::new_with(domain, RandomState::new())
     }
 }
 
 
-impl<'d, K, V, S> Plugmap<'d, K, V, S>
+impl<'d, K, V, S> PlugMap<'d, K, V, S>
 where
     V: 'd,
     K: Hash + Eq + 'd,
     S: BuildHasher,
 {
+    pub fn new_with(domain: &'d Domain, hasher: S) -> Self
+    {
+        Self {
+            domain,
+            table: domain.keep(Table::new(Table::DEFAULT_SIZE, domain)),
+            hasher,
+        }
+    }
+
     pub fn get(&self, key: &K) -> Option<Guard<'d, V>>
     {
         let hash = self.hash(key);

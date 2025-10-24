@@ -6,18 +6,18 @@ mod map;
 mod table;
 
 
-pub use map::Plugmap;
+pub use map::PlugMap;
 
 
 #[cfg(test)]
 mod tests
 {
-    use super::Plugmap;
+    use super::PlugMap;
 
     #[test]
     fn look_and_feel()
     {
-        let map = Plugmap::<&str, usize>::new();
+        let map = PlugMap::<&str, usize>::new();
 
         assert!(map.get(&"mk").is_none());
         assert!(map.insert("mk", 39).is_none());
@@ -30,7 +30,7 @@ mod tests
     #[test]
     fn many_keys()
     {
-        let map = Plugmap::new();
+        let map = PlugMap::new();
 
         for i in 1..100
         {
