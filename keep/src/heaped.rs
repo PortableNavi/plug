@@ -1,90 +1,101 @@
-use crate::{Guard, Keep};
-pub struct HeapedRef<'a, T>(&'a T);
+use std::{ops::Deref, sync::atomic::AtomicPtr};
 
 
-#[allow(unused)]
-impl<'a, T> HeapedRef<'a, T>
+// Making the fields of this struct not pub makes this trait effectively sealed...
+pub struct HeapedPtr<T>(pub(crate) *mut T);
+
+
+impl<T> From<HeapedPtr<T>> for AtomicPtr<T>
 {
-    #[inline]
-    pub(crate) fn shared(&self) -> &T
+    fn from(value: HeapedPtr<T>) -> Self
     {
-        self.0
-    }
-
-    #[inline]
-    pub(crate) fn ptr(&self) -> *mut T
-    {
-        self.0 as *const T as _
+        AtomicPtr::new(value.0)
     }
 }
 
 
+impl<T> From<&AtomicPtr<T>> for HeapedPtr<T>
+{
+    fn from(value: &AtomicPtr<T>) -> Self
+    {
+        Self(value.load(std::sync::atomic::Ordering::SeqCst))
+    }
+}
+
+
+impl<T> Copy for HeapedPtr<T> {}
+impl<T> Clone for HeapedPtr<T>
+{
+    fn clone(&self) -> Self
+    {
+        *self
+    }
+}
+
+
+impl<T> Deref for HeapedPtr<T>
+{
+    type Target = T;
+
+    fn deref(&self) -> &Self::Target
+    {
+        unsafe { &*self.0 }
+    }
+}
+
+
+/// Provides a function to acquire a heap allocated pointer to self.
 #[allow(clippy::missing_safety_doc)]
-pub unsafe trait Heaped<'a, T>
+pub unsafe trait Heaped<T>
 {
-    unsafe fn heaped(self) -> HeapedRef<'a, T>;
+    /// Provides a pointer to a Target on the heap, that is never manually deallocated.
+    #[allow(clippy::missing_safety_doc)]
+    unsafe fn heaped_ptr(self) -> HeapedPtr<T>;
 }
 
 
-unsafe impl<'d, 'a, T> Heaped<'a, T> for &'a Guard<'d, T>
-where
-    'd: 'a,
+unsafe impl<T> Heaped<T> for Box<T>
 {
-    unsafe fn heaped(self) -> HeapedRef<'a, T>
+    unsafe fn heaped_ptr(self) -> HeapedPtr<T>
     {
-        HeapedRef(self.reference)
+        HeapedPtr(Box::into_raw(self))
     }
 }
 
 
-unsafe impl<'d, 'a, T> Heaped<'a, T> for Guard<'d, T>
-where
-    'd: 'a,
+unsafe impl<T> Heaped<T> for HeapedPtr<T>
 {
-    unsafe fn heaped(self) -> HeapedRef<'a, T>
+    unsafe fn heaped_ptr(self) -> HeapedPtr<T>
     {
-        HeapedRef(self.reference)
+        HeapedPtr(self.0)
     }
 }
 
 
-unsafe impl<'d, 'a, T> Heaped<'a, T> for &'a Keep<'d, T>
-where
-    'd: 'a,
+unsafe impl<T> Heaped<T> for &HeapedPtr<T>
 {
-    unsafe fn heaped(self) -> HeapedRef<'a, T>
+    unsafe fn heaped_ptr(self) -> HeapedPtr<T>
     {
-        HeapedRef(self.read().reference)
+        HeapedPtr(self.0)
     }
 }
 
 
-unsafe impl<'d, 'a, T> Heaped<'a, T> for Keep<'d, T>
-where
-    'd: 'a,
+//TODO: having this might be confusing???
+// unsafe impl<T: Clone> Heaped<T> for &Guard<T>
+// {
+//     unsafe fn heaped_ptr(self) -> HeapedPtr<T>
+//     {
+//         let cloned: T = self.as_ref().clone();
+//         unsafe { cloned.heaped_ptr() }
+//     }
+// }
+
+
+unsafe impl<T> Heaped<T> for T
 {
-    unsafe fn heaped(self) -> HeapedRef<'a, T>
+    unsafe fn heaped_ptr(self) -> HeapedPtr<T>
     {
-        HeapedRef(self.read().reference)
-    }
-}
-
-
-unsafe impl<'a, T> Heaped<'a, T> for T
-{
-    unsafe fn heaped(self) -> HeapedRef<'a, T>
-    {
-        let ptr = Box::into_raw(Box::new(self));
-        HeapedRef(unsafe { &*ptr })
-    }
-}
-
-
-unsafe impl<'a, T> Heaped<'a, T> for Box<T>
-{
-    unsafe fn heaped(self) -> HeapedRef<'a, T>
-    {
-        let ptr = Box::into_raw(self);
-        HeapedRef(unsafe { &*ptr })
+        HeapedPtr(Box::into_raw(Box::new(self)))
     }
 }

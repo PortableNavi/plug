@@ -1,46 +1,17 @@
-// #![allow(unused)]
-#![feature(arbitrary_self_types)]
-
-mod entry;
-mod map;
-mod resizer;
-mod table;
-
-
-pub use map::PlugMap;
-
+pub fn add(left: u64, right: u64) -> u64
+{
+    left + right
+}
 
 #[cfg(test)]
 mod tests
 {
-    use super::PlugMap;
+    use super::*;
 
     #[test]
-    fn look_and_feel()
+    fn it_works()
     {
-        let map = PlugMap::<&str, usize>::new();
-
-        assert!(map.get(&"mk").is_none());
-        assert!(map.insert("mk", 39).is_none());
-        assert!(map.get(&"other_key").is_none());
-        assert_eq!(39, *map.get(&"mk").unwrap());
-        assert_eq!(39, *map.insert("mk", 393939).unwrap());
-        assert_eq!(393939, *map.get(&"mk").unwrap());
-    }
-
-    #[test]
-    fn many_keys()
-    {
-        let map = PlugMap::new();
-
-        for i in 1..100
-        {
-            map.insert(i, i * 200);
-        }
-
-        for i in 1..100
-        {
-            assert_eq!(i * 200, *map.get(&i).unwrap())
-        }
+        let result = add(2, 2);
+        assert_eq!(result, 4);
     }
 }

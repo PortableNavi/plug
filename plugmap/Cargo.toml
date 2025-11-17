@@ -5,4 +5,3 @@ edition = "2024"
 
 [dependencies]
 keep = { version = "0.1.0", path = "../keep" }
-parking_lot = "0.12.5"
