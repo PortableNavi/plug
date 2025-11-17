@@ -1,3 +1,4 @@
+use crate::table::Table;
 use keep::{Domain, Guard, Heaped, Keep};
 use parking_lot::Mutex;
 
@@ -5,6 +6,7 @@ use parking_lot::Mutex;
 pub enum Entry<'d, K, V>
 {
     Head(Keep<'d, EntryNode<'d, K, V>>),
+    Moved(Guard<'d, Table<'d, K, V>>),
     Empty,
 }
 
@@ -18,6 +20,7 @@ where
         match self
         {
             Entry::Head(keep) => keep.read().find(key),
+            Self::Moved(_) => todo!(),
             Entry::Empty => None,
         }
     }
@@ -70,17 +73,20 @@ where
         }
     }
 
-    pub fn update(self: Guard<'d, Self>, entry: Keep<'d, Self>) -> Option<Guard<'d, V>>
+    pub fn pop() -> _ {}
+
+    pub fn update(self: Guard<'d, Self>, entry: Keep<'d, Self>) -> (usize, Option<Guard<'d, V>>)
     {
         let mut current = self.clone();
-        let lock = self.lock.lock();
+        let mut depth = 0;
+        let _lock = self.lock.lock();
         let guard = entry.read();
 
         loop
         {
             if current.key == guard.key
             {
-                break Some(current.value.swap(guard.value.read()));
+                break (depth, Some(current.value.swap(guard.value.read())));
             }
 
             match &*current.next.read()
@@ -89,9 +95,11 @@ where
                 None =>
                 {
                     current.next.store(Some(entry));
-                    break None;
+                    break (depth, None);
                 }
             }
+
+            depth += 1;
         }
     }
 

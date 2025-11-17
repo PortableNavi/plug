@@ -1,15 +1,21 @@
 use crate::{
     entry::{Entry, EntryNode},
+    resizer::Resizer,
     table::Table,
 };
 use keep::{Domain, Guard, Heaped, Keep};
 use std::hash::{BuildHasher, Hash, RandomState};
 
 
+//TODO: What is the optimal stride???
+const TRANSFER_STRIDE: usize = 5;
+
+
 pub struct PlugMap<'d, K, V, S = RandomState>
 {
     domain: &'d Domain,
     table: Keep<'d, Table<'d, K, V>>,
+    resizer: Keep<'d, Option<Resizer<'d, K, V>>>,
     hasher: S,
 }
 
@@ -51,6 +57,7 @@ where
             domain,
             table: domain.keep(Table::new(Table::DEFAULT_SIZE, domain)),
             hasher,
+            resizer: domain.keep(None),
         }
     }
 
@@ -65,42 +72,107 @@ where
         V: 'h,
     {
         let hash = self.hash(&key);
-        let table = self.table.read();
-        let bin_index = table.bin_index(hash);
 
         let entry_node = self
             .domain
             .keep(EntryNode::new(key, val, hash, self.domain));
 
-        let mut current_entry = table.bin_at(bin_index);
-
-        'insert: loop
+        'load_table: loop
         {
-            match &*current_entry
+            let table = self.table.read();
+            let bin_index = table.bin_index(hash);
+            let mut current_entry = table.bin_at(bin_index);
+
+            let result = 'insert: loop
             {
-                Entry::Head(keep) => break 'insert keep.read().update(entry_node),
-
-                Entry::Empty =>
+                match &*current_entry
                 {
-                    match table.exchange(
-                        bin_index,
-                        &current_entry,
-                        Entry::Head(self.domain.keep(entry_node.read())),
-                    )
+                    Entry::Head(keep) =>
                     {
-                        Ok(old) => break 'insert None,
+                        let resizer = self.resizer.read();
 
-                        // current_entry became not empty while this insert was happening, update the current_entry and retry...
-                        Err(curr) =>
+                        if let Some(ref resizer) = *resizer
                         {
-                            current_entry = curr;
-                            continue 'insert;
+                            //TODO: resizer.help(...)
+                            todo!();
+                            continue 'load_table;
+                        }
+
+                        let (depth, res) = keep.read().update(entry_node);
+
+                        if res.is_none()
+                        {
+                            table.inc_entry_count();
+                        }
+
+                        // Only check for a resize if the bin that was just updated now contains more then one item.
+                        if depth > 0
+                        {
+                            if table.resize_up_needed()
+                            {
+                                let old_table = self.table.read();
+                                let new_table = self.domain.keep(old_table.new_bigger(self.domain));
+                                let new_resizer =
+                                    Resizer::new(old_table, new_table, TRANSFER_STRIDE);
+
+                                match self.resizer.exchange(&resizer, Some(new_resizer))
+                                {
+                                    Ok(_) =>
+                                    {
+                                        if let Some(ref resizer) = *self.resizer.read()
+                                        {
+                                            //TODO: resizer.help(...)
+                                            todo!()
+                                        }
+
+                                        break 'insert res;
+                                    }
+
+                                    Err(_) =>
+                                    {
+                                        // Some other thread already started a resize, while we were starting one...
+                                        // Since the other thread is now in charge of the resize, we are all done here...
+                                        break 'insert res;
+                                    }
+                                }
+                            }
+                        }
+
+                        break 'insert res;
+                    }
+
+                    Entry::Empty =>
+                    {
+                        match table.exchange(
+                            bin_index,
+                            &current_entry,
+                            Entry::Head(self.domain.keep(entry_node.read())),
+                        )
+                        {
+                            Ok(_old) =>
+                            {
+                                table.inc_entry_count();
+                                break 'insert None;
+                            }
+
+                            // current_entry became not empty while this insert was happening, update the current_entry and retry...
+                            Err(curr) =>
+                            {
+                                current_entry = curr;
+                                continue 'insert;
+                            }
                         }
                     }
-                }
-            }
 
-            break None;
+                    Entry::Moved(new_table) =>
+                    {
+                        //TODO: Update in new table...
+                        todo!()
+                    }
+                }
+            };
+
+            break 'load_table result;
         }
     }
 

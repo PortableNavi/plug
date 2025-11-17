@@ -1,8 +1,9 @@
-#![allow(unused)]
+// #![allow(unused)]
 #![feature(arbitrary_self_types)]
 
 mod entry;
 mod map;
+mod resizer;
 mod table;
 
 
