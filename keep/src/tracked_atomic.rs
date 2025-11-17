@@ -64,7 +64,7 @@ impl<T> TrackedAtomic<T>
 
         self.ptr
             .compare_exchange(current, new.0, Ordering::SeqCst, Ordering::SeqCst)
-            .map_err(|ptr| unsafe { Box::from_raw(ptr) })
+            .map_err(|_| unsafe { Box::from_raw(new.0) })
             .map(|old| (HeapedPtr(old), self.add_mutation(new)))
     }
 

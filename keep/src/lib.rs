@@ -3,11 +3,13 @@
 
 pub(crate) mod guard;
 pub(crate) mod heaped;
+pub(crate) mod keep;
 pub(crate) mod tracked_atomic;
 
 
 pub use guard::Guard;
 pub use heaped::Heaped;
+pub use keep::Keep;
 
 
 #[cfg(test)]

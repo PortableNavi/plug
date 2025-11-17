@@ -2,6 +2,7 @@ use std::{cell::RefCell, ops::Deref};
 
 use crate::{
     Heaped,
+    Keep,
     heaped::HeapedPtr,
     tracked_atomic::{DomainNode, TrackedAtomic},
 };
@@ -165,5 +166,14 @@ impl<T> Drop for Guard<T>
         {
             drop(unsafe { Box::from_raw(self.tracked_atomic.borrow().0) });
         }
+    }
+}
+
+
+impl<T> From<Keep<T>> for Guard<T>
+{
+    fn from(value: Keep<T>) -> Self
+    {
+        value.read()
     }
 }
