@@ -26,6 +26,12 @@ mod tests
 
         map.insert(39, "Briar");
 
+        assert_eq!(
+            Some("Briar"),
+            map.get(&39).map(|v| *v),
+            "get(..) did not return the current value"
+        );
+
         assert_eq!("Briar", *map.insert(39, "Miku").unwrap());
 
         assert_eq!(

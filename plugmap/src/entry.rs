@@ -28,7 +28,7 @@ pub struct EntryNode<Key, Val>
     val: Keep<Val>,
     key: Key,
     hash: u64,
-    next: Keep<Option<Guard<EntryNode<Key, Val>>>>,
+    next: Keep<Option<Keep<EntryNode<Key, Val>>>>,
 }
 
 
@@ -58,29 +58,32 @@ where
         }
     }
 
-    pub fn update(&self, node: Guard<EntryNode<Key, Val>>) -> Option<Guard<Val>>
+    pub fn update(&self, node: &Keep<EntryNode<Key, Val>>) -> Option<Guard<Val>>
     {
         if self.key == node.read().key
         {
-            let guard = node.read().val.read();
-            self.val.swap_guard(&guard);
-            return Some(guard);
+            self.val.swap_with(&node.read().val);
+            return Some(node.read().value());
         }
 
-        let next = self.next.read();
+        let next = &self.next;
+        let mut next_guard = next.read();
 
         loop
         {
-            match &*next
+            match &*next_guard
             {
-                Some(next) => return next.update(node),
+                Some(next) => return next.read().update(node),
 
                 None =>
                 {
-                    if next.exchange(Some(node.clone())).is_ok()
+                    match next.exchange(&next_guard, Some(node.clone()))
                     {
-                        next.reload();
-                        return None;
+                        Ok(_old) => return None,
+                        Err(actual) =>
+                        {
+                            next_guard = actual;
+                        }
                     }
                 }
             }
@@ -96,7 +99,7 @@ where
 
         match &*self.next.read()
         {
-            Some(next) => next.search(key),
+            Some(next) => next.read().search(key),
             None => None,
         }
     }

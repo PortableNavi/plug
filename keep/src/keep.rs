@@ -2,6 +2,17 @@ use crate::{Guard, Heaped, atomic_swap, tracked_atomic::TrackedAtomic};
 use std::sync::atomic::{AtomicPtr, Ordering};
 
 
+pub struct KeepMarker<T>(*mut TrackedAtomic<T>);
+impl<T> Copy for KeepMarker<T> {}
+impl<T> Clone for KeepMarker<T>
+{
+    fn clone(&self) -> Self
+    {
+        *self
+    }
+}
+
+
 pub struct Keep<T>
 {
     tracked_atomic: AtomicPtr<TrackedAtomic<T>>,
@@ -27,6 +38,30 @@ impl<T> Keep<T>
     pub fn swap_with(&self, other: &Self)
     {
         atomic_swap(&self.tracked_atomic, &other.tracked_atomic);
+    }
+
+    pub fn mark(&self) -> KeepMarker<T>
+    {
+        KeepMarker(self.tracked_atomic.load(Ordering::SeqCst))
+    }
+
+    pub fn exchange_with(&self, current: KeepMarker<T>, other: &Self) -> Result<(), KeepMarker<T>>
+    {
+        match self.tracked_atomic.compare_exchange(
+            current.0,
+            other.tracked_atomic.load(Ordering::SeqCst),
+            Ordering::SeqCst,
+            Ordering::SeqCst,
+        )
+        {
+            Ok(_) =>
+            {
+                other.tracked_atomic.store(current.0, Ordering::SeqCst);
+                Ok(())
+            }
+
+            Err(actual) => Err(KeepMarker(actual)),
+        }
     }
 
     /// Reads the current value from this keep's tracked atomic

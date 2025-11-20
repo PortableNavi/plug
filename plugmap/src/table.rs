@@ -35,35 +35,37 @@ where
 
     pub fn get(&self, key: &Key, hash: u64) -> Option<Guard<Val>>
     {
-        self.entry_of(hash).search(key)
+        self.entry_of(hash).read().search(key)
     }
 
-    pub fn insert(&self, entry_node: EntryNode<Key, Val>) -> Option<Guard<EntryNode<Key, Val>>>
+    pub fn insert(&self, entry_node: EntryNode<Key, Val>) -> Option<Guard<Val>>
     {
-        let entry = self.entry_of(entry_node.hash());
+        let hash = entry_node.hash();
         let entry_node = Keep::new(entry_node);
+        let entry = self.entry_of(hash);
 
         loop
         {
-            match &*entry
+            let entry_guard = entry.read();
+            let entry_marker = entry.mark();
+
+            match &*entry_guard
             {
                 Entry::Empty =>
                 {
-                    // If the entry has changed while exchanging, reload it and try again...
-                    if entry.exchange(Entry::Head(entry_node.clone())).is_err()
+                    let new = Keep::new(Entry::Head(entry_node.clone()));
+
+                    if entry.exchange_with(entry_marker, &new).is_err()
                     {
-                        entry.reload();
                         continue;
                     }
 
-                    return None;
+                    break None;
                 }
 
-                Entry::Head(keep) => todo!(),
+                Entry::Head(keep) => break keep.read().update(&entry_node),
             }
         }
-
-        None
     }
 
     #[inline]
@@ -73,14 +75,14 @@ where
     }
 
     #[inline]
-    fn entry_at(&self, index: usize) -> Guard<Entry<Key, Val>>
+    fn entry_at(&self, index: usize) -> &Keep<Entry<Key, Val>>
     {
-        self.entries[index].read()
+        &self.entries[index]
     }
 
     #[inline]
-    fn entry_of(&self, hash: u64) -> Guard<Entry<Key, Val>>
+    fn entry_of(&self, hash: u64) -> &Keep<Entry<Key, Val>>
     {
-        self.entries[self.index_of(hash)].read()
+        &self.entries[self.index_of(hash)]
     }
 }

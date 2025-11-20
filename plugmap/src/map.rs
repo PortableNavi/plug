@@ -34,11 +34,7 @@ where
     pub fn insert(&self, key: Key, val: Val) -> Option<Guard<Val>>
     {
         let hash = self.hash(&key);
-
-        self.table
-            .read()
-            .insert(EntryNode::new(key, val, hash))
-            .map(|g| g.value())
+        self.table.read().insert(EntryNode::new(key, val, hash))
     }
 
     /// Tries to get a value associated with `key`. Returns `None` if no such value exists.

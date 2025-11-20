@@ -9,7 +9,7 @@ use std::sync::atomic::{AtomicPtr, Ordering};
 
 pub use guard::Guard;
 pub use heap_ptr::{HeapPtr, Heaped};
-pub use keep::Keep;
+pub use keep::{Keep, KeepMarker};
 
 
 pub(crate) fn atomic_swap<T>(a: &AtomicPtr<T>, b: &AtomicPtr<T>)
