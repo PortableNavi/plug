@@ -18,7 +18,7 @@ impl<Key, Val, S> PlugMap<Key, Val, S>
 
 impl<Key, Val, S> PlugMap<Key, Val, S>
 where
-    Key: Hash,
+    Key: Hash + Eq,
     S: BuildHasher,
 {
     /// Creates a new PlugMap with a capacity of `2^size` and a `BuildHasher` provided by the caller.
@@ -41,6 +41,12 @@ where
             .map(|g| g.value())
     }
 
+    /// Tries to get a value associated with `key`. Returns `None` if no such value exists.
+    pub fn get(&self, key: &Key) -> Option<Guard<Val>>
+    {
+        self.table.read().get(key, self.hash(key))
+    }
+
     #[inline]
     fn hash(&self, val: impl Hash) -> u64
     {
@@ -51,7 +57,7 @@ where
 
 impl<Key, Val> PlugMap<Key, Val, RandomState>
 where
-    Key: Hash,
+    Key: Hash + Eq,
 {
     pub fn new() -> Self
     {
@@ -62,7 +68,7 @@ where
 
 impl<Key, Val> Default for PlugMap<Key, Val, RandomState>
 where
-    Key: Hash,
+    Key: Hash + Eq,
 {
     fn default() -> Self
     {

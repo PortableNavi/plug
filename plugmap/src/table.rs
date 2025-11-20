@@ -13,6 +13,8 @@ pub struct Table<Key, Val>
 
 
 impl<Key, Val> Table<Key, Val>
+where
+    Key: Eq,
 {
     pub fn new(size: usize) -> Self
     {
@@ -31,6 +33,11 @@ impl<Key, Val> Table<Key, Val>
         }
     }
 
+    pub fn get(&self, key: &Key, hash: u64) -> Option<Guard<Val>>
+    {
+        self.entry_of(hash).search(key)
+    }
+
     pub fn insert(&self, entry_node: EntryNode<Key, Val>) -> Option<Guard<EntryNode<Key, Val>>>
     {
         let entry = self.entry_of(entry_node.hash());
@@ -43,7 +50,7 @@ impl<Key, Val> Table<Key, Val>
                 Entry::Empty =>
                 {
                     // If the entry has changed while exchanging, reload it and try again...
-                    if let Err(_) = entry.exchange(Entry::Head(entry_node.clone()))
+                    if entry.exchange(Entry::Head(entry_node.clone())).is_err()
                     {
                         entry.reload();
                         continue;

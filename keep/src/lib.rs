@@ -1,39 +1,36 @@
-#![feature(negative_impls)]
+mod guard;
+mod heap_ptr;
+mod keep;
+mod tracked_atomic;
 
 
-pub(crate) mod guard;
-pub(crate) mod heaped;
-pub(crate) mod keep;
-pub(crate) mod tracked_atomic;
+use std::sync::atomic::{AtomicPtr, Ordering};
 
 
 pub use guard::Guard;
-pub use heaped::Heaped;
+pub use heap_ptr::{HeapPtr, Heaped};
 pub use keep::Keep;
 
 
-#[cfg(test)]
-mod tests
+pub(crate) fn atomic_swap<T>(a: &AtomicPtr<T>, b: &AtomicPtr<T>)
 {
-    use super::*;
+    let mut ptr_a = a.load(Ordering::SeqCst);
+    let mut ptr_b = b.load(Ordering::SeqCst);
 
-    #[test]
-    fn look_and_feel()
+    loop
     {
-        let a = Guard::new("a");
-        let b = Guard::new("b");
+        if let Err(changed) = a.compare_exchange(ptr_a, ptr_b, Ordering::SeqCst, Ordering::SeqCst)
+        {
+            ptr_a = changed;
+            continue;
+        }
 
-        let backup = a.read();
+        if let Err(changed) = b.compare_exchange(ptr_b, ptr_a, Ordering::SeqCst, Ordering::SeqCst)
+        {
+            ptr_b = changed;
+            continue;
+        }
 
-        a.swap_guard(&b);
-
-        assert_eq!(*a, "b");
-        assert_eq!(*b, "a");
-        assert_eq!(*backup, "a");
-
-        let old = backup.swap("c");
-
-        assert_eq!(*old, "a");
-        assert_eq!(*backup, "c");
+        break;
     }
 }

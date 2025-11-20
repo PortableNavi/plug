@@ -1,273 +1,307 @@
-use crate::{Heaped, heaped::HeapedPtr};
-use std::sync::atomic::{AtomicBool, AtomicPtr, Ordering};
+use crate::{Guard, HeapPtr, Heaped};
+use std::{
+    ptr,
+    sync::atomic::{AtomicBool, AtomicPtr, AtomicUsize, Ordering},
+};
 
 
-/// Tracks readers of every mutation of a heap allocated value with the goal of concurrent memory reclamation.
-///
-/// A "accessor" called `Guard<T>` will hold a reference to the value held in this `TrackedAtomic<T>`.
-/// A `Guard<T>` created from this `TrackedAtomic<T>` will have the pointer to the reference it is guarding
-/// registered in the domain associated with this `TrackedAtomic<T>`. The referenced value will always reference
-/// the value of the internal atomic pointer at the time of creating the `Guard<T>`, even if the value of this
-/// `TrackedAtomic<T>` changes during the lifetime of the guard. Once a `Guard<T>` drops it will unregister
-/// the value it is referencing from its domain.
-///
-/// The set of all equal pointers registered to this `TrackedAtomic<T>`'s domain are representing a mutation.
-/// If two (or more) `Guard<T>`s are guarding the same reference they are part of the same mutation.
-///
-/// Once all guards of a mutation of this `TrackedAtomic<T>` have been dropped, the value that is allocated on the heap and associated
-/// with this mutation can be dropped and its memory reclaimed, as there is no longer a way to access that value.
-///
-/// If the domain of this `TrackedAtomic<T>` is completely empty, the `TrackedAtomic<T>` is dead and its domain can be freed.
-pub(crate) struct TrackedAtomic<T>
+pub struct TrackedAtomic<T>
 {
-    ptr: AtomicPtr<T>,
-    domain: DomainNode<T>,
-    dead: AtomicBool,
+    ptr: HeapPtr<AtomicPtr<T>>,
+    guard_ptr: HeapPtr<AtomicPtr<GuardNode<T>>>,
+    domain: HeapPtr<GuardNode<T>>,
+    keep_count: HeapPtr<AtomicUsize>,
 }
 
 
 impl<T> TrackedAtomic<T>
 {
-    /// Creates a new and empty `TrackedAtomic<T>`.
-    pub(crate) fn new(ptr: impl Heaped<T>) -> Self
+    pub fn new(value: impl Heaped<T>) -> Self
     {
+        let value = value.heap_ptr();
+
+        let domain = GuardNode::new(ptr::null_mut(), ptr::null_mut()).heap_ptr();
+        unsafe { &mut *domain.as_ptr() }.head = domain.as_ptr();
+
+        let guard_ptr = AtomicPtr::new(domain.as_ref().register(value.as_ptr())).heap_ptr();
+
+
         Self {
-            ptr: AtomicPtr::new(unsafe { ptr.heaped_ptr().0 }),
-            domain: DomainNode::new(std::ptr::null_mut()),
-            dead: AtomicBool::new(false),
+            ptr: AtomicPtr::new(value.as_ptr()).heap_ptr(),
+            guard_ptr,
+            domain,
+            keep_count: AtomicUsize::new(0).heap_ptr(),
         }
     }
 
-    /// Adds `val` to the domain.
-    pub(crate) fn add_mutation(&self, val: impl Heaped<T>) -> HeapedPtr<DomainNode<T>>
+    pub fn read(&self) -> Guard<T>
     {
-        HeapedPtr(self.domain.insert(unsafe { val.heaped_ptr().0 }))
+        let ptr = self.ptr.as_ref().load(Ordering::SeqCst);
+        let guard_node = self.domain.as_ref().register(ptr);
+        Guard::new(guard_node, ptr)
     }
 
-    pub(crate) fn swap(&self, val: impl Heaped<T>) -> (HeapedPtr<T>, HeapedPtr<DomainNode<T>>)
+    /// Stores a new value in this tracked atomic
+    pub fn write(&self, value: impl Heaped<T>)
     {
-        let val = unsafe { val.heaped_ptr() };
-        let old = HeapedPtr(self.ptr.swap(val.0, Ordering::SeqCst));
-        let new_node = self.add_mutation(val);
+        let value = value.heap_ptr();
 
-        (old, new_node)
+        // Store the new value and create a guard node for it
+        let old = self.ptr.as_ref().swap(value.as_ptr(), Ordering::SeqCst);
+        let node = self.domain.as_ref().register(value.as_ptr());
+
+        // now store the guard and unregister the old value
+        let old_node = self.guard_ptr.as_ref().swap(node, Ordering::SeqCst);
+        unsafe { &*old_node }.unregister(old);
     }
 
-    #[allow(clippy::type_complexity)] // It looks a bit ugly, but it has to...
-    pub(crate) fn exchange(
-        &self,
-        current: *mut T,
-        new: impl Heaped<T>,
-    ) -> Result<(HeapedPtr<T>, HeapedPtr<DomainNode<T>>), Box<T>>
+    /// Swaps the current value with `value` and returns the old one.
+    pub fn swap(&self, value: impl Heaped<T>) -> Guard<T>
     {
-        let new = unsafe { new.heaped_ptr() };
+        let value = value.heap_ptr();
 
-        self.ptr
-            .compare_exchange(current, new.0, Ordering::SeqCst, Ordering::SeqCst)
-            .map_err(|_| unsafe { Box::from_raw(new.0) })
-            .map(|old| (HeapedPtr(old), self.add_mutation(new)))
+        // Store the new value and create a guard node for it
+        let old = self.ptr.as_ref().swap(value.as_ptr(), Ordering::SeqCst);
+        let node = self.domain.as_ref().register(value.as_ptr());
+
+        // Now store the guard node
+        let old_node = self.guard_ptr.as_ref().swap(node, Ordering::SeqCst);
+
+        // The old node can be reused for the returned guard
+        Guard::new(old_node, old)
     }
 
-    /// Reads the current value
-    pub(crate) fn read(&self) -> HeapedPtr<T>
-    {
-        HeapedPtr(self.ptr.load(Ordering::SeqCst))
-    }
-
-    /// Checks if the mutation of `val` is over.
+    /// Exchanges the value with `new` if the current value is `current`.
     ///
-    /// If this mutation is over, its value will be returned as `Some(Box<T>)`.
-    /// Dropping this box will drop and free the value of this mutation, like the drop of a normal box would.
+    /// This does not check for semantic equality, instead the pointers that guarded are compared
     ///
-    /// if this mutation is not over, `None` will be returned.
-    pub(crate) fn try_clean_mutation_of(&self, val: *mut T) -> Option<Box<T>>
+    /// # Returns
+    /// * `Ok(Guard<T>)` containing the old value on success (actual == `current`)
+    /// * `Err(Guard<T>)` containing the actual current value on failure (actual != `current`)
+    pub fn exchange(&self, current: &Guard<T>, new: impl Heaped<T>) -> Result<Guard<T>, Guard<T>>
     {
-        let mut current = &self.domain;
-        let mut dead = true; // Indicates if no values are registered to this domain.
+        let new = new.heap_ptr();
 
-        loop
+        match self.ptr.as_ref().compare_exchange(
+            current.as_ptr(),
+            new.as_ptr(),
+            Ordering::SeqCst,
+            Ordering::SeqCst,
+        )
         {
-            let curr_val = current.value.load(Ordering::SeqCst);
-
-            if curr_val == val
+            Ok(old) =>
             {
-                return None;
+                let guard_node = self.domain.as_ref().register(new.as_ptr());
+                let old_node = self.guard_ptr.as_ref().swap(guard_node, Ordering::SeqCst);
+                Ok(Guard::new(old_node, old))
             }
 
-            if dead && !curr_val.is_null()
+            Err(cur) =>
             {
-                // Since there is at least another value other than null or val registered to this domain it cannot be dead.
-                dead = false;
+                let guard_node = self.domain.as_ref().register(cur);
+                Err(Guard::new(guard_node, cur))
             }
+        }
+    }
 
-            match unsafe { current.next.load(Ordering::SeqCst).as_ref() }
-            {
-                Some(next) => current = next,
+    pub fn unregister_keep(&self)
+    {
+        // If there are no more keeps that reference this tracked atomic, it can be cleaned up.
+        if 1 >= self.keep_count.as_ref().fetch_sub(1, Ordering::SeqCst)
+        {
+            // Unregister the current value from the domain
+            unsafe { &*self.guard_ptr.as_ref().load(Ordering::SeqCst) }.unregister_self();
 
-                // `val` is not registered to this domain anymore. Pack it in a box and return it.
-                None =>
+            unsafe {
+                // Now free everything except guard nodes
+                self.ptr.free();
+                self.keep_count.free();
+
+                // Keep a reference to the head
+                let head = self.domain;
+
+                // Now free this struct, leaving only the guard nodes alive,
+                // which are cleaned up by unregistering nodes from the domain
+                HeapPtr::from_ptr(self as *const _ as *mut Self).free();
+
+                // Check if the guard list is already dead, in this case clean the head
+                if head.as_ref().dead.load(Ordering::SeqCst)
                 {
-                    // Indicate if this domain is dead to the tracked atomic
-                    if dead
-                    {
-                        self.dead.store(true, Ordering::SeqCst);
-                    }
-
-                    return Some(unsafe { Box::from_raw(val) });
+                    head.free();
                 }
-            }
+                // if its not dead, indicate that the tracked atomic is dead and the head can kill itself
+                else
+                {
+                    head.as_ref().dead.store(true, Ordering::SeqCst);
+                }
+            };
         }
     }
 
-    /// Returns if self is dead.
-    #[inline]
-    pub(crate) fn is_dead(&self) -> bool
+    pub fn register_keep(&self)
     {
-        self.dead.load(Ordering::SeqCst)
-    }
-
-    /// Frees this domains linked list. Panics if self is not dead.
-    unsafe fn destroy_domain(&self)
-    {
-        // Do not destroy domains that are not dead.
-        assert!(self.dead.load(Ordering::SeqCst));
-
-        let mut current = self.domain.next.load(Ordering::SeqCst);
-        let mut values = vec![];
-
-        loop
-        {
-            values.push(current);
-
-            match unsafe { current.as_ref() }
-            {
-                Some(c) => current = c.next.load(Ordering::SeqCst),
-                None => break,
-            }
-        }
-
-
-        while let Some(val) = values.pop()
-        {
-            if let Some(val) = unsafe { val.as_ref() }
-            {
-                unsafe { val.free_child() };
-            }
-        }
-
-        unsafe { self.domain.free_child() };
+        self.keep_count.as_ref().fetch_add(1, Ordering::SeqCst);
     }
 }
 
 
-impl<T> Drop for TrackedAtomic<T>
+pub struct GuardNode<T>
 {
-    fn drop(&mut self)
-    {
-        if self.dead.load(Ordering::SeqCst)
-        {
-            unsafe { self.destroy_domain() };
-        }
-    }
-}
-
-
-/// Atomically linked list node.
-pub(crate) struct DomainNode<T>
-{
+    head: *mut Self,
+    dead: AtomicBool,
     value: AtomicPtr<T>,
     next: AtomicPtr<Self>,
 }
 
 
-impl<T> DomainNode<T>
+impl<T> GuardNode<T>
 {
-    /// Creates a new domain node
-    pub(crate) fn new(value: *mut T) -> Self
+    fn new(value: *mut T, head: *mut Self) -> Self
     {
         Self {
+            head,
+            dead: AtomicBool::new(false),
             value: AtomicPtr::new(value),
-            next: AtomicPtr::new(std::ptr::null_mut()),
+            next: AtomicPtr::new(ptr::null_mut()),
         }
     }
 
-    /// Appends `node` to the tail of this list making `node` the new tail
-    pub(crate) fn append(&self, node: *mut Self)
+    /// Registers `value` inside the domain.
+    fn register(&self, value: *mut T) -> *mut Self
     {
-        let mut current = self;
-
-        loop
+        match self.value.compare_exchange(
+            ptr::null_mut(),
+            value,
+            Ordering::SeqCst,
+            Ordering::SeqCst,
+        )
         {
-            match current.next.compare_exchange(
-                std::ptr::null_mut(),
-                node,
-                Ordering::SeqCst,
-                Ordering::SeqCst,
-            )
+            Ok(_) => self as *const Self as _,
+            Err(_) =>
             {
-                Ok(_old) => break,
-                Err(actual) => current = unsafe { &*actual },
-            }
-        }
-    }
+                let node = GuardNode::new(value, self.head).heap_ptr();
+                let mut next = self.next.load(Ordering::SeqCst);
 
-    /// Inserts `val` into this domain, by either finding a free node or extending this list.
-    ///
-    /// Returns a pointer to the node guarding `val`
-    pub(crate) fn insert(&self, val: *mut T) -> *mut Self
-    {
-        let mut current = self;
-
-        loop
-        {
-            match current.value.compare_exchange(
-                std::ptr::null_mut(),
-                val,
-                Ordering::SeqCst,
-                Ordering::SeqCst,
-            )
-            {
-                Ok(_old) => break current as *const Self as _,
-                Err(_) =>
+                loop
                 {
-                    match unsafe { current.next.load(Ordering::SeqCst).as_ref() }
+                    if let Some(next) = unsafe { next.as_ref() }
                     {
-                        Some(next) => current = next,
-                        None =>
-                        {
-                            let node = Box::into_raw(Box::new(Self::new(val)));
-                            current.append(node);
-                            break node;
-                        }
+                        unsafe { node.free() }; // This node is no longer needed.
+                        break next.register(value);
+                    }
+
+                    match self.next.compare_exchange(
+                        ptr::null_mut(),
+                        node.as_ptr(),
+                        Ordering::SeqCst,
+                        Ordering::SeqCst,
+                    )
+                    {
+                        Ok(_) => break node.as_ptr(),
+                        Err(actual) => next = actual,
                     }
                 }
             }
         }
     }
 
-    /// Unregisters this nodes value if it is `current`.
-    ///
-    /// Returns `None` if this node unregistered from `current`.
-    /// Returns `Some(actual)` if this node's value is not `current` where `actual` will hold the actual value of this node.
-    pub(crate) fn unregister(&self, current: *mut T) -> Option<*mut T>
+    /// Unregisters this guard from the domain if its guarding `value`
+    pub fn unregister(&self, value: *mut T) -> bool
     {
-        self.value
-            .compare_exchange(
-                current,
-                std::ptr::null_mut(),
-                Ordering::SeqCst,
-                Ordering::SeqCst,
-            )
-            .err()
+        if value.is_null()
+        {
+            return false;
+        }
+
+        let result = self.value.compare_exchange(
+            value,
+            ptr::null_mut(),
+            Ordering::SeqCst,
+            Ordering::Relaxed,
+        );
+
+        // return false if this node did not unregister successfully
+        if result.is_err()
+        {
+            return false;
+        }
+
+        // look if there's cleanup to do and keep track if the guard_domain holds any other guards than null
+        let mut domain_dead = true;
+        let mut mutation_over = true;
+        let mut current = unsafe { &*self.head };
+
+        while mutation_over || domain_dead
+        {
+            let ptr = current.value.load(Ordering::SeqCst);
+
+            if ptr == value
+            {
+                mutation_over = false;
+            }
+
+            if !ptr.is_null()
+            {
+                domain_dead = false;
+            }
+
+            match unsafe { current.next.load(Ordering::SeqCst).as_ref() }
+            {
+                Some(next) => current = next,
+                None => break,
+            }
+        }
+
+        // If the mutation is over, free the associated value
+        if mutation_over
+        {
+            unsafe { HeapPtr::from_ptr(value).free() };
+        }
+
+
+        // If the domain is dead, free all nodes except the head if its not marked as dead.
+        if domain_dead
+        {
+            let head = self.head;
+
+            let mut current = unsafe { &*head }
+                .next
+                .swap(ptr::null_mut(), Ordering::SeqCst);
+
+            while let Some(curr) = unsafe { current.as_ref() }
+            {
+                let next = curr.next.swap(ptr::null_mut(), Ordering::SeqCst);
+                unsafe { HeapPtr::from_ptr(current).free() };
+                current = next;
+            }
+
+            // Now check if the head is dead and kill it, while marking it as dead.
+            // if its just marked as dead here, the last surviving keep will kill it on drop.
+            if unsafe { &*head }.dead.swap(true, Ordering::SeqCst)
+            {
+                unsafe { HeapPtr::from_ptr(head).free() };
+            }
+        }
+
+        true
     }
 
-    unsafe fn free_child(&self)
+    pub fn unregister_self(&self)
     {
-        let val = self.next.swap(std::ptr::null_mut(), Ordering::SeqCst);
+        self.unregister(self.value.load(Ordering::SeqCst));
+    }
+}
 
-        if !val.is_null()
-        {
-            drop(unsafe { Box::from_raw(val) });
+
+impl<T> Clone for TrackedAtomic<T>
+{
+    fn clone(&self) -> Self
+    {
+        Self {
+            ptr: self.ptr,
+            guard_ptr: self.guard_ptr,
+            domain: self.domain,
+            keep_count: self.keep_count,
         }
     }
 }
