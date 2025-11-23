@@ -50,6 +50,15 @@ impl<T> Deref for Guard<T>
 }
 
 
+impl<T> AsRef<T> for Guard<T>
+{
+    fn as_ref(&self) -> &T
+    {
+        unsafe { &*self.reference }
+    }
+}
+
+
 impl<T> Drop for Guard<T>
 {
     fn drop(&mut self)
@@ -59,13 +68,36 @@ impl<T> Drop for Guard<T>
 }
 
 
-impl<T> std::fmt::Debug for Guard<T>
+// impl<T> std::fmt::Debug for Guard<T>
+// {
+//     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result
+//     {
+//         f.debug_struct("Guard")
+//             .field("guard_node", &self.guard_node)
+//             .field("reference", &self.reference)
+//             .finish()
+//     }
+// }
+
+
+impl<T: std::fmt::Debug> std::fmt::Debug for Guard<T>
 {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result
     {
         f.debug_struct("Guard")
-            .field("guard_node", &self.guard_node)
-            .field("reference", &self.reference)
+            .field("reference", self.as_ref())
             .finish()
     }
 }
+
+
+impl<T: PartialEq> PartialEq for Guard<T>
+{
+    fn eq(&self, other: &Self) -> bool
+    {
+        self.as_ref() == other.as_ref()
+    }
+}
+
+
+impl<T: Eq> Eq for Guard<T> {}

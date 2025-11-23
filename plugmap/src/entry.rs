@@ -43,9 +43,21 @@ where
     }
 
     #[inline]
+    pub fn next(&self) -> &Keep<Option<Keep<EntryNode<Key, Val>>>>
+    {
+        &self.next
+    }
+
+    #[inline]
     pub fn hash(&self) -> u64
     {
         self.hash
+    }
+
+    #[inline]
+    pub fn key(&self) -> &Key
+    {
+        &self.key
     }
 
     pub fn new(key: Key, val: Val, hash: u64) -> Self

@@ -30,6 +30,14 @@ where
         }
     }
 
+    /// Tries to remove an entry from the map.
+    pub fn remove(&self, key: &Key) -> Option<Guard<Val>>
+    where
+        Val: std::fmt::Debug,
+    {
+        self.table.read().remove(key, self.hash(key))
+    }
+
     /// Inserts a new key-value pair into the map or updates an existing one...
     pub fn insert(&self, key: Key, val: Val) -> Option<Guard<Val>>
     {
